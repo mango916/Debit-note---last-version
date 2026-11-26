@@ -1281,7 +1281,8 @@ async function registerFont(doc) {
 /* ── Core PDF builder ───────────────────────────── */
 async function buildPDF() {
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+  doc.setProperties({ title: 'Debit Note ' + (state.referenceNumber || ''), author: state.companyName || '' });
   await registerFont(doc);
 
   const PW = 210, PH = 297;
@@ -1306,13 +1307,19 @@ async function buildPDF() {
   const total    = subtotal + vatAmt;
 
   // ── Load image helper ──
-  const loadImg = (src) => new Promise((res, rej) => {
+  // Downscale to ~200dpi at A4 width and re-encode as JPEG: full-res PNGs
+  // repeated per page made 2–14 MB PDFs that mail gateways flag as malicious.
+  const imgCache = {};
+  const loadImg = (src) => imgCache[src] ||= new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
+      const scale = Math.min(1, 1654 / img.naturalWidth);
       const c = document.createElement('canvas');
-      c.width = img.naturalWidth; c.height = img.naturalHeight;
-      c.getContext('2d').drawImage(img, 0, 0);
-      res({ data: c.toDataURL('image/png'), w: img.naturalWidth, h: img.naturalHeight });
+      c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); // JPEG has no alpha
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      res({ data: c.toDataURL('image/jpeg', 0.85), w: img.naturalWidth, h: img.naturalHeight });
     };
     img.onerror = rej;
     img.src = src;
@@ -1324,7 +1331,7 @@ async function buildPDF() {
     try {
       const { data, w, h } = await loadImg(images.header);
       HEADER_H = Math.min(PW * (h / w), 50);
-      doc.addImage(data, 'PNG', 0, 0, PW, HEADER_H);
+      doc.addImage(data, 'JPEG', 0, 0, PW, HEADER_H, 'hdr', 'FAST');
     } catch(e) { console.warn('Header image failed', e); }
   }
 
@@ -1335,7 +1342,7 @@ async function buildPDF() {
       try {
         const { data, w, h } = await loadImg(images.footer);
         FOOTER_H = Math.min(PW * (h / w), 22);
-        doc.addImage(data, 'PNG', 0, PH - FOOTER_H, PW, FOOTER_H);
+        doc.addImage(data, 'JPEG', 0, PH - FOOTER_H, PW, FOOTER_H, 'ftr', 'FAST');
         return;
       } catch(e) { console.warn('Footer image failed', e); }
     }
@@ -1346,7 +1353,7 @@ async function buildPDF() {
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(8.5);
     doc.setFont(FONT, 'normal');
-    doc.text('© www.teamtechvibe.com', PW / 2, PH - FOOTER_H + 7, { align: 'center' });
+    doc.text('© TechVibe', PW / 2, PH - FOOTER_H + 7, { align: 'center' });
   };
   await drawFooter();
 
@@ -1360,7 +1367,7 @@ async function buildPDF() {
       try {
         const { data, w, h } = await loadImg(images.header);
         const hh = Math.min(PW*(h/w), 50);
-        doc.addImage(data, 'PNG', 0, 0, PW, hh);
+        doc.addImage(data, 'JPEG', 0, 0, PW, hh, 'hdr', 'FAST');
         y = hh + 9;
       } catch {}
     }
